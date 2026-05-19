@@ -1,0 +1,4 @@
+interface:
+  display_name: "Video Knowledge"
+  short_description: "Use processed video knowledge from the local video-knowledge server."
+  default_prompt: "Use video-knowledge to answer questions about processed Bilibili, YouTube, or Douyin videos with evidence."

@@ -1,0 +1,30 @@
+# Dependencies & build output
+node_modules/
+dist/
+.runtime/
+
+# Runtime data — never commit cookies, API keys, video files, queues, indexes.
+# The example template is the only thing checked in.
+data/
+!data/connectors.json.example
+
+# Secrets (belt-and-suspenders with data/)
+.env
+.env.*
+*.key
+*.cookie
+secrets/
+
+# Logs / batch progress
+*.log
+_progress/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

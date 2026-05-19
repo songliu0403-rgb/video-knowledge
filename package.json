@@ -1,0 +1,43 @@
+{
+  "name": "video-knowledge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first pipeline that turns Bilibili and Douyin saved videos into agent-readable reports with citable evidence.",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "sync-skills": "powershell -NoProfile -File ./scripts/sync-skills.ps1",
+    "sync-skills:dry": "powershell -NoProfile -File ./scripts/sync-skills.ps1 -DryRun",
+    "sanity": "powershell -NoProfile -File ./scripts/sanity-check.ps1",
+    "recompose-all": "powershell -NoProfile -File ./scripts/recompose-all-documented.ps1",
+    "rerun-failed": "python ./scripts/rerun-failed-stages.py",
+    "fetch-comments-all": "powershell -NoProfile -File ./scripts/fetch-comments-all.ps1",
+    "process-pending": "powershell -NoProfile -File ./scripts/process-pending.ps1",
+    "process-folders": "powershell -NoProfile -File ./scripts/process-folders.ps1",
+    "progress": "powershell -NoProfile -File ./scripts/progress.ps1",
+    "list-failures": "powershell -NoProfile -File ./scripts/list-failures.ps1",
+    "finish": "powershell -NoProfile -File ./scripts/finish.ps1",
+    "prescore": "python ./skills/video-knowledge/scripts/prescore_favorites.py",
+    "prescore:enrich": "python ./skills/video-knowledge/scripts/prescore_favorites.py --enrich",
+    "prescore:douyin": "python ./skills/video-knowledge/scripts/prescore_douyin.py",
+    "fetch:douyin": "python3.11 ./skills/video-knowledge/scripts/fetch_douyin_collections.py",
+    "process-by-score": "powershell -NoProfile -File ./scripts/process-by-score.ps1",
+    "process-by-score:dry": "powershell -NoProfile -File ./scripts/process-by-score.ps1 -DryRun",
+    "process-by-score:douyin": "powershell -NoProfile -File ./scripts/process-by-score.ps1 -Platform douyin",
+    "process-by-score:douyin:dry": "powershell -NoProfile -File ./scripts/process-by-score.ps1 -Platform douyin -DryRun"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.8.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
