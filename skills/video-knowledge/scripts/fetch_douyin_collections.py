@@ -246,49 +246,76 @@ async def amain(args: argparse.Namespace) -> int:
 
     started = time.time()
 
-    print(f"\n[2/3] Fetching saved/favorited collection (cap {args.max_counts}) ...")
-    collection = await fetch_collection(handler, args.max_counts)
-    print(f"    fetched {len(collection)} collection items in {time.time()-started:.1f}s")
-    if args.enrich_stats and collection:
-        await enrich_with_stats(handler, collection, "collection")
-
+    # Step 2: collection (skippable when only refreshing likes)
+    collection: list[dict[str, Any]] = []
     coll_path = out_dir / "douyin-collection.json"
-    write_json(
-        coll_path,
-        {
-            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "platform": "douyin",
-            "kind": "collection",
-            "self": self_info,
-            "total": len(collection),
-            "videos": collection,
-        },
-    )
-    print(f"    wrote {coll_path}")
+    if args.skip_collection:
+        print(f"\n[2/3] Skipping collection (--skip-collection)")
+        if coll_path.exists():
+            print(f"    keeping existing {coll_path}")
+    else:
+        print(f"\n[2/3] Fetching saved/favorited collection (cap {args.max_counts}) ...")
+        collection = await fetch_collection(handler, args.max_counts)
+        print(f"    fetched {len(collection)} collection items in {time.time()-started:.1f}s")
+        if args.enrich_stats and collection:
+            await enrich_with_stats(handler, collection, "collection")
+        write_json(
+            coll_path,
+            {
+                "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "platform": "douyin",
+                "kind": "collection",
+                "self": self_info,
+                "total": len(collection),
+                "videos": collection,
+            },
+        )
+        print(f"    wrote {coll_path}")
 
-    t1 = time.time()
-    print(f"\n[3/3] Fetching liked videos (cap {args.max_counts}) ...")
-    if not self_info.get("sec_uid"):
-        print("    ERROR: no sec_uid; cannot fetch likes", file=sys.stderr)
-        return 2
-    likes = await fetch_likes(handler, self_info["sec_uid"], args.max_counts)
-    print(f"    fetched {len(likes)} liked items in {time.time()-t1:.1f}s")
-    if args.enrich_stats and likes:
-        await enrich_with_stats(handler, likes, "likes")
-
+    # Step 3: likes (skippable)
+    likes: list[dict[str, Any]] = []
     likes_path = out_dir / "douyin-likes.json"
-    write_json(
-        likes_path,
-        {
-            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "platform": "douyin",
-            "kind": "likes",
-            "self": self_info,
-            "total": len(likes),
-            "videos": likes,
-        },
-    )
-    print(f"    wrote {likes_path}")
+    if args.skip_likes:
+        print(f"\n[3/3] Skipping likes (--skip-likes)")
+        if likes_path.exists():
+            print(f"    keeping existing {likes_path}")
+    else:
+        t1 = time.time()
+        print(f"\n[3/3] Fetching liked videos (cap {args.max_counts}) ...")
+        if not self_info.get("sec_uid"):
+            print("    ERROR: no sec_uid; cannot fetch likes", file=sys.stderr)
+            return 2
+        likes = await fetch_likes(handler, self_info["sec_uid"], args.max_counts)
+        print(f"    fetched {len(likes)} liked items in {time.time()-t1:.1f}s")
+
+        # Douyin's likes API often returns fewer items than profile.favoriting_count.
+        # The platform stops paging via `has_more=false` while the user still has
+        # liked videos hidden by privacy/dedup/deletion rules. Warn but do not fail.
+        expected = self_info.get("favoriting_count") or 0
+        if expected and len(likes) < expected:
+            shortfall = expected - len(likes)
+            print(
+                f"    NOTE: profile.favoriting_count={expected} but API returned {len(likes)} "
+                f"(short by {shortfall}). This is a Douyin API limit — privacy/deleted/dedup "
+                f"items are not exposed even with a fresh cookie. See SKILL.md references/douyin.md."
+            )
+
+        if args.enrich_stats and likes:
+            await enrich_with_stats(handler, likes, "likes")
+        write_json(
+            likes_path,
+            {
+                "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "platform": "douyin",
+                "kind": "likes",
+                "self": self_info,
+                "total": len(likes),
+                "expected_total": expected,
+                "shortfall": max(0, expected - len(likes)) if expected else None,
+                "videos": likes,
+            },
+        )
+        print(f"    wrote {likes_path}")
 
     print(f"\nDone. Elapsed: {time.time()-started:.1f}s. "
           f"collection={len(collection)} likes={len(likes)}")
@@ -311,6 +338,18 @@ def main() -> int:
         action="store_true",
         help="After listing, call fetch_one_video on each aweme to fill in "
         "stats (likes/comments/shares/collects). Adds ~3-5s per video.",
+    )
+    parser.add_argument(
+        "--skip-collection",
+        action="store_true",
+        help="Don't refetch the saved/favorited collection list. Use this when "
+        "only the likes list needs refreshing (saves ~30 min on large libraries).",
+    )
+    parser.add_argument(
+        "--skip-likes",
+        action="store_true",
+        help="Don't refetch the liked-videos list. Use when only the collection "
+        "needs refreshing.",
     )
     args = parser.parse_args()
     return asyncio.run(amain(args))

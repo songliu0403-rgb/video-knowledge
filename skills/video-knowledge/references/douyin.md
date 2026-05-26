@@ -35,6 +35,9 @@ Format: `name1=value1; name2=value2; ...` (HTTP Cookie header). The companion fi
 pnpm fetch:douyin
 # or, with per-video stats enrichment (slow ~10s/video):
 pnpm fetch:douyin -- --enrich-stats
+# refresh just one list (save the ~30 min cost of the other):
+pnpm fetch:douyin -- --skip-collection      # only refetch likes
+pnpm fetch:douyin -- --skip-likes           # only refetch collection
 ```
 
 Writes:
@@ -45,6 +48,29 @@ Writes:
 ```
 
 Each row carries `aweme_id`, `title`, `author`, `duration_seconds`, and optional `stats` (digg/comment/share/collect/play). f2 inserts ~30s rate-limit sleeps between pages, so a 1300-item collection takes ~40 min. Without `--enrich-stats`, the `stats` field is `null` and the prescore step will skip stat-based bonuses.
+
+### Likes count discrepancy (Douyin API limit, not a bug)
+
+Three numbers will commonly disagree:
+
+- **App display** (e.g. 243) — what the user sees in their phone
+- **`profile.favoriting_count`** from `/aweme/v1/web/user/profile/self/` (e.g. 223) — the API's own stat field, internally inconsistent with the App
+- **Actually fetched items** (e.g. 198) — what `fetch_user_like_videos` returns before `has_more=false`
+
+This is **a Douyin platform limit**, not a script or cookie bug. The platform stops paginating before exhausting the full list — videos that are deleted, set private, or dedup-collapsed are not exposed even with a fresh cookie. The `douyin-likes.json` written by the fetcher records `expected_total` (from profile) and `shortfall` so the discrepancy is auditable.
+
+What does NOT help:
+
+- Re-running with a fresh cookie (same result)
+- Running as admin / on a different network
+- Setting a higher `--max-counts` (the cap isn't the limit)
+
+What might help (not implemented):
+
+- Periodic re-fetches over weeks — newly liked videos appear without losing previously fetched ones (we don't dedup across runs, but a custom merge script could)
+- Browser export via Cookie-Editor + parsing the App-rendered HTML (much heavier)
+
+Accept the shortfall as the price of doing business with Douyin.
 
 ## Value scoring
 

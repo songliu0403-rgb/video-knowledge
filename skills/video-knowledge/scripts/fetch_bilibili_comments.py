@@ -224,6 +224,26 @@ def normalize_comment(c: dict[str, Any], anonymize: bool, video_owner_mid: int |
         "rcount": c.get("rcount") or 0,
         "is_author": video_owner_mid is not None and mid_int == video_owner_mid,
     }
+
+    # B站评论可以带配图（截图、复现效果等）。保留 img_src + 尺寸，让下游
+    # compose-document 在「评论区精选」章节嵌入 Markdown 图片引用。
+    raw_pictures = content.get("pictures")
+    if isinstance(raw_pictures, list) and raw_pictures:
+        pics: list[dict[str, Any]] = []
+        for p in raw_pictures:
+            if not isinstance(p, dict):
+                continue
+            src = p.get("img_src") or p.get("imgSrc")
+            if not src:
+                continue
+            pics.append({
+                "img_src": src,
+                "img_width": p.get("img_width") or p.get("imgWidth"),
+                "img_height": p.get("img_height") or p.get("imgHeight"),
+            })
+        if pics:
+            out["pictures"] = pics
+
     if anonymize:
         # Keep mid for cross-comment correlation but drop name/avatar/sign
         out["author_mid"] = mid_int

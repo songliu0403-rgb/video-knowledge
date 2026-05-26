@@ -2027,6 +2027,25 @@ function buildCommunitySection(community: Record<string, unknown>): string | und
     return oneLine.length > max ? oneLine.slice(0, max) + '…' : oneLine;
   };
 
+  // Render the `pictures` array attached to a curated comment as a list of
+  // Markdown image references, indented two spaces so they nest under the
+  // parent bullet. Up to 4 images per comment (rare to have more, and the
+  // report stays readable).
+  const renderPictures = (c: Record<string, unknown>, indent: string = '  '): string[] => {
+    const pics = asObjectArray(c.pictures);
+    if (pics.length === 0) return [];
+    const lines: string[] = [];
+    for (const pic of pics.slice(0, 4)) {
+      const src = firstString(pic.img_src);
+      if (!src) continue;
+      const w = valueToNumber(pic.img_width);
+      const h = valueToNumber(pic.img_height);
+      const altDims = w && h ? ` ${w}×${h}` : '';
+      lines.push(`${indent}![评论配图${altDims}](${src})`);
+    }
+    return lines;
+  };
+
   const lines: string[] = [];
 
   if (pinned.length > 0) {
@@ -2037,6 +2056,7 @@ function buildCommunitySection(community: Record<string, unknown>): string | und
       if (!text) continue;
       const like = valueToNumber(c.like) ?? 0;
       lines.push(`- ❤${like} ${trimText(text)}`);
+      lines.push(...renderPictures(c));
     }
     lines.push('');
   }
@@ -2049,6 +2069,7 @@ function buildCommunitySection(community: Record<string, unknown>): string | und
       if (!text) continue;
       const like = valueToNumber(c.like) ?? 0;
       lines.push(`- ❤${like} ${trimText(text)}`);
+      lines.push(...renderPictures(c));
     }
     lines.push('');
   }
@@ -2063,10 +2084,12 @@ function buildCommunitySection(community: Record<string, unknown>): string | und
       if (!mainText) continue;
       const mainLike = main ? valueToNumber(main.like) ?? 0 : 0;
       lines.push(`- 主楼（❤${mainLike}）：${trimText(mainText)}`);
+      if (main) lines.push(...renderPictures(main, '    '));
       for (const r of replies) {
         const rt = firstString(r.text);
         if (rt) {
           lines.push(`  - 作者回：${trimText(rt)}`);
+          lines.push(...renderPictures(r, '      '));
         }
       }
     }
@@ -2082,6 +2105,7 @@ function buildCommunitySection(community: Record<string, unknown>): string | und
       if (!text) continue;
       const like = valueToNumber(c.like) ?? 0;
       lines.push(`- ❤${like} ${trimText(text)}`);
+      lines.push(...renderPictures(c));
     }
     lines.push('');
   }
