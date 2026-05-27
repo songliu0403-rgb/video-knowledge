@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -207,6 +209,163 @@ def fetch_subreplies(
     return out[:max_count]
 
 
+# =====================================================================
+# Comment value scoring (rule-based, no LLM)
+# =====================================================================
+# Past curation used `like >= min_likes` only, which surfaced shallow
+# "前排/沙发/666/笑哭" comments alongside genuinely useful ones. The new
+# scorer combines multiple signals so high-like-but-shallow comments
+# rank below low-like-but-substantive ones.
+
+# Pure-shallow shortcuts: any comment matching these is dropped before
+# scoring.
+_SHALLOW_REPEAT = re.compile(r"^(.)\1{2,}$")
+_ONLY_PUNCT_EMOJI = re.compile(r"^[\W\s_]+$", re.UNICODE)
+
+# Shallow-pattern dictionary: each hit subtracts SHALLOW_PENALTY. Use
+# whole-substring match (not regex) for cheap and predictable hits.
+SHALLOW_PATTERNS: tuple[str, ...] = (
+    # 占位/灌水
+    "沙发", "前排", "打卡", "占位", "mark", "Mark", "MARK", "路过",
+    "顶顶顶", "顶顶", "顶帖", "顶一下", "顶起",
+    # 浅赞
+    "赞了", "学习了", "收藏了", "已学习", "已收藏", "好东西", "好的", "好棒",
+    # 拍马屁
+    "楼主好", "楼主牛", "楼主厉害", "大佬好", "大佬牛", "大佬厉害", "大佬tql",
+    "牛逼", "牛批", "牛皮", "niubi", "NB", "nb",
+    # 情绪宣泄
+    "卧槽", "我去", "WC",
+    "笑死", "哈哈哈", "hhhh", "hhh",
+    # 数字水
+    "666", "6666", "66666",
+    # 浮夸
+    "太牛了", "太厉害了", "厉害了", "前排支持", "前排吃瓜",
+    # 蹲守
+    "等更新", "蹲一个", "蹲后续", "求更新", "催更",
+)
+
+# Tech / domain words that indicate substantive content. Capped at +25.
+TECH_KEYWORDS: tuple[str, ...] = (
+    # 复现/参考
+    "复现", "参考", "提示词", "prompt", "Prompt", "PROMPT",
+    "参数", "配置", "设置", "选项",
+    # 版本/数据
+    "版本", "v1", "v2", "v3", "v4", "v5",
+    # 流程
+    "教程", "工作流", "流程", "步骤", "节点",
+    "代码", "效果", "结果", "案例",
+    # 故障
+    "问题", "错误", "报错", "修复", "解决", "失败",
+    # 尝试
+    "尝试", "试了", "试试", "试过", "建议", "推荐",
+    # 工具
+    "插件", "模型", "脚本", "工具",
+    # 比较
+    "对比", "区别", "为什么", "怎么", "如何",
+    # 解释
+    "原理", "解释", "说明", "演示", "讲解",
+    # 实证
+    "实测", "我做了", "我试", "已经",
+)
+
+_NUMBER_WITH_UNIT = re.compile(
+    r"\d+\s*(分钟|秒钟|小时|帧|版本|步|遍|轮|次|条|个|节|分|秒|时|天)"
+    r"|\d+\.\d+"
+)
+_AT_QUESTION = re.compile(r"@\S+.*[?？]")
+
+SHALLOW_PENALTY = -25
+
+
+def is_pure_shallow(text: str) -> bool:
+    """Definitely-shallow comments dropped before scoring."""
+    t = text.strip()
+    if len(t) < 4:
+        return True
+    if _SHALLOW_REPEAT.match(t):
+        return True
+    if _ONLY_PUNCT_EMOJI.match(t):
+        return True
+    return False
+
+
+def score_comment_value(c: dict[str, Any]) -> tuple[int, list[str]]:
+    """Return (value_score, reasons[]). Higher = more substantive.
+
+    Returns (0, ['pure_shallow']) for trivially shallow text. Otherwise
+    combines: log(like) base, length tiers, picture presence, reply
+    discussion count, tech-keyword density, specific-number presence,
+    @-question presence, and a SHALLOW_PATTERNS penalty.
+    """
+    text = (c.get("text") or "").strip()
+    if is_pure_shallow(text):
+        return (0, ["pure_shallow"])
+
+    like = int(c.get("like") or 0)
+    rcount = int(c.get("rcount") or 0)
+    has_pics = bool(c.get("pictures"))
+
+    score = 0
+    reasons: list[str] = []
+
+    # Compressed like base (so 100 likes don't dwarf substantive content)
+    like_boost = int(math.log(like + 1) * 3)
+    if like_boost > 0:
+        score += like_boost
+        reasons.append(f"like={like}(+{like_boost})")
+
+    # Length tiers
+    L = len(text)
+    if L < 8:
+        score -= 30
+        reasons.append("len<8(-30)")
+    elif L >= 150:
+        score += 20
+        reasons.append("len>=150(+20)")
+    elif L >= 60:
+        score += 10
+        reasons.append("len>=60(+10)")
+
+    # Pictures: very strong (user attached evidence / reproduction)
+    if has_pics:
+        score += 30
+        reasons.append("has_pictures(+30)")
+
+    # Reply count: drove community discussion
+    if rcount >= 10:
+        score += 20
+        reasons.append(f"rcount={rcount}(+20)")
+    elif rcount >= 5:
+        score += 15
+        reasons.append(f"rcount={rcount}(+15)")
+
+    # Tech-domain keywords
+    matched_tech = [w for w in TECH_KEYWORDS if w in text]
+    if matched_tech:
+        tech_boost = min(25, len(matched_tech) * 5)
+        score += tech_boost
+        # show only a few in the reason trace to keep it readable
+        reasons.append(f"tech:{matched_tech[:3]}(+{tech_boost})")
+
+    # Specific number with unit ("第5分钟" / "1.5 版本")
+    if _NUMBER_WITH_UNIT.search(text):
+        score += 10
+        reasons.append("specific_number(+10)")
+
+    # @-question (community follow-up signal)
+    if _AT_QUESTION.search(text):
+        score += 10
+        reasons.append("at_question(+10)")
+
+    # Shallow-pattern penalty
+    matched_shallow = [w for w in SHALLOW_PATTERNS if w in text]
+    if matched_shallow:
+        score += SHALLOW_PENALTY
+        reasons.append(f"shallow:{matched_shallow[:3]}({SHALLOW_PENALTY})")
+
+    return (max(0, score), reasons)
+
+
 def normalize_comment(c: dict[str, Any], anonymize: bool, video_owner_mid: int | None) -> dict[str, Any]:
     member = c.get("member") or {}
     content = c.get("content") or {}
@@ -270,37 +429,78 @@ def curate_comments(
     sub_by_root: dict[str, list[dict[str, Any]]],
     video_owner_mid: int | None,
     anonymize: bool,
-    min_likes: int,
+    value_threshold: int,
 ) -> dict[str, Any]:
+    """Curate comments using a multi-signal value score.
+
+    `high_likes` keeps its name for backwards compatibility with the TS
+    composer, but is now populated by `value_score >= value_threshold`,
+    not raw like count. Author replies and "with_author_subreply" entries
+    are kept regardless of score (the author engaged → inherently valuable).
+
+    Each normalized comment carries `_value_score` and `_value_reasons`
+    so downstream tools / debugging can audit why each one was kept.
+    """
     norm_main = [normalize_comment(c, anonymize, video_owner_mid) for c in main_comments]
     norm_pinned = [normalize_comment(c, anonymize, video_owner_mid) for c in pinned_main]
+
+    # Attach value scores to every normalized comment up front, including
+    # pinned ones (useful for downstream filtering / agent reasoning).
+    for n in norm_main + norm_pinned:
+        score, reasons = score_comment_value(n)
+        n["_value_score"] = score
+        n["_value_reasons"] = reasons
 
     author_replies: list[dict[str, Any]] = []
     high_likes: list[dict[str, Any]] = []
     with_author_subreply: list[dict[str, Any]] = []
+    filtered_shallow = 0
+    filtered_shallow_examples: list[dict[str, Any]] = []
 
     for raw_c, n in zip(main_comments, norm_main):
         if n["is_author"]:
             author_replies.append(n)
-        if n["like"] >= min_likes:
+        elif n["_value_score"] >= value_threshold:
             high_likes.append(n)
-        # Check sub-replies
+        else:
+            filtered_shallow += 1
+            # Keep a small trace of dropped comments so the user can sanity
+            # check the threshold without re-reading the whole raw file.
+            if len(filtered_shallow_examples) < 5:
+                filtered_shallow_examples.append({
+                    "rpid": n.get("rpid"),
+                    "like": n.get("like"),
+                    "score": n["_value_score"],
+                    "reasons": n["_value_reasons"],
+                    "text_preview": (n.get("text") or "")[:80],
+                })
+
+        # Sub-replies path is independent: any main comment that drew an
+        # author response goes here regardless of its own value_score.
         sub_list = sub_by_root.get(str(raw_c.get("rpid"))) or []
         author_subs_raw = [s for s in sub_list if is_author_reply(s, video_owner_mid)]
         if author_subs_raw:
             author_subs = [normalize_comment(s, anonymize, video_owner_mid) for s in author_subs_raw]
+            for sub in author_subs:
+                sub_score, sub_reasons = score_comment_value(sub)
+                sub["_value_score"] = sub_score
+                sub["_value_reasons"] = sub_reasons
             with_author_subreply.append({
                 "main": n,
                 "author_replies": author_subs,
             })
 
-    high_likes.sort(key=lambda x: x["like"], reverse=True)
+    # Sort surviving comments by value_score desc, like count as tiebreaker
+    high_likes.sort(key=lambda x: (-x["_value_score"], -x["like"]))
 
     return {
         "author_replies": author_replies,
         "pinned": norm_pinned,
         "high_likes": high_likes,
         "with_author_subreply": with_author_subreply,
+        "_filtered_shallow_count": filtered_shallow,
+        "_filtered_shallow_examples": filtered_shallow_examples,
+        "_value_threshold": value_threshold,
     }
 
 
@@ -331,7 +531,20 @@ def main() -> int:
     parser.add_argument("--main-count", type=int, default=30, help="Number of main comments to fetch")
     parser.add_argument("--sub-count", type=int, default=20, help="Max sub-replies per main comment")
     parser.add_argument("--sort", type=int, choices=[0, 1, 2], default=2, help="0=time, 1=likes, 2=hotness")
-    parser.add_argument("--min-likes", type=int, default=5, help="High-likes filter threshold")
+    parser.add_argument(
+        "--min-likes",
+        type=int,
+        default=5,
+        help="(legacy, unused) replaced by --value-threshold",
+    )
+    parser.add_argument(
+        "--value-threshold",
+        type=int,
+        default=20,
+        help="Minimum value_score for a non-author comment to appear in "
+        "high_likes. Combines like-count + content signals + shallow "
+        "penalty. Default 20; raise to be stricter, lower to be loose.",
+    )
     parser.add_argument("--delay-ms", type=int, default=1200, help="Delay between API calls to avoid 412")
     parser.add_argument("--no-anonymize", dest="anonymize", action="store_false", default=True, help="Keep usernames in curated output (default: anonymize)")
     parser.add_argument("--dry-run", action="store_true")
@@ -409,7 +622,7 @@ def main() -> int:
 
     curated = curate_comments(
         pinned, main_comments, sub_by_root, owner_mid,
-        anonymize=args.anonymize, min_likes=args.min_likes,
+        anonymize=args.anonymize, value_threshold=args.value_threshold,
     )
     curated["video_id"] = args.video_id
     curated["fetched_at"] = raw["fetched_at"]

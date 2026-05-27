@@ -54,12 +54,20 @@ python {baseDir}/scripts/video_knowledge.py archive-processed-videos --write
 
 ```bash
 # Fetch and curate Bilibili comments for ONE video. NO LLM CALLS — uses B station's
-# public reply API + rule-based filtering (author replies / pinned / high likes /
-# sub-thread author follow-ups). Safe even after the LLM quota expires.
+# public reply API + rule-based filtering. Safe even after the LLM quota expires.
 # Cookie + author mid auto-detected from connector config + source.info.json.
 # Outputs comments.raw.json (full) and comments.curated.json (filtered) into the work dir.
+#
+# Curation buckets:
+#   author_replies / pinned / with_author_subreply       always kept (author engaged)
+#   high_likes                                            value_score >= --value-threshold
+#
+# value_score combines: log(like) base + length tiers + has_pictures(+30)
+# + rcount(+15..+20) + tech-keyword density(+5/each, cap +25) + specific-number(+10)
+# + at-question(+10) - shallow-pattern(-25) - too-short/pure-emoji penalties.
+# Each curated comment carries _value_score + _value_reasons for audit.
 python {baseDir}/scripts/video_knowledge.py fetch-comments BV12o63B5EFd
-python {baseDir}/scripts/video_knowledge.py fetch-comments BV12o63B5EFd --main-count 50 --sub-count 20 --sort 2 --min-likes 5
+python {baseDir}/scripts/video_knowledge.py fetch-comments BV12o63B5EFd --main-count 50 --sub-count 20 --sort 2 --value-threshold 25  # stricter
 python {baseDir}/scripts/video_knowledge.py fetch-comments BV12o63B5EFd --no-anonymize  # keep usernames (default: anonymized to author_mid only)
 
 # Batch fetch comments for every documented video. Top-level repo-root pnpm script.
